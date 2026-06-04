@@ -11,8 +11,6 @@ env:
   ECS_CLUSTER:  loansight-cluster-dev
   API_SERVICE:  loansight-api-dev
   UI_SERVICE:   loansight-ui-dev
-  API_TASK_DEF: loansight-api-dev
-  UI_TASK_DEF:  loansight-ui-dev
 
 jobs:
   # ── Job 1: Test ──────────────────────────────────────────────────────────────
@@ -97,8 +95,6 @@ jobs:
     environment: production
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -106,47 +102,56 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Deploy API to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ env.API_TASK_DEF }}
-          service:         ${{ env.API_SERVICE }}
-          cluster:         ${{ env.ECS_CLUSTER }}
-          image:           ${{ needs.build.outputs.api_image }}
-          container-name:  loan-api
-          wait-for-service-stability: true
+      - name: Deploy API — force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $API_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
+          echo "✅ API deployment triggered"
 
-      - name: Deploy UI to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ env.UI_TASK_DEF }}
-          service:         ${{ env.UI_SERVICE }}
-          cluster:         ${{ env.ECS_CLUSTER }}
-          image:           ${{ needs.build.outputs.ui_image }}
-          container-name:  loan-ui
-          wait-for-service-stability: true
+      - name: Deploy UI — force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $UI_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
+          echo "✅ UI deployment triggered"
+
+      - name: Wait for API service stability
+        run: |
+          echo "Waiting for API service to stabilise..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $API_SERVICE \
+            --region $AWS_REGION
+          echo "✅ API service stable"
 
       - name: Verify API health
         run: |
-          TASK_ARN=$(aws ecs list-tasks \
-            --cluster $ECS_CLUSTER --service-name $API_SERVICE \
+          TASK=$(aws ecs list-tasks \
+            --cluster $ECS_CLUSTER \
+            --service-name $API_SERVICE \
             --query 'taskArns[0]' --output text)
           ENI=$(aws ecs describe-tasks \
-            --cluster $ECS_CLUSTER --tasks $TASK_ARN \
+            --cluster $ECS_CLUSTER --tasks $TASK \
             --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
             --output text)
-          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+          IP=$(aws ec2 describe-network-interfaces \
             --network-interface-ids $ENI \
             --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
-          echo "API at http://$PUBLIC_IP:8000"
-          curl -f "http://$PUBLIC_IP:8000/health" && echo "✅ Healthy"
-          curl -f "http://$PUBLIC_IP:8000/ready"  && echo "✅ Ready"
+          echo "API at http://$IP:8000"
+          curl -f "http://$IP:8000/health" && echo "✅ Health check passed"
+          curl -f "http://$IP:8000/ready"  && echo "✅ Ready check passed"
 
       - name: Rollback on failure
         if: failure()
         run: |
-          echo "⚠️  Deployment failed — rolling back"
+          echo "⚠️  Deployment failed — rolling back API"
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $API_SERVICE \
-            --force-new-deployment
+            --force-new-deployment \
+            --region $AWS_REGION
