@@ -1,0 +1,152 @@
+name: CI/CD — Test → Build → Deploy (AWS)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION:   ap-south-2
+  ECS_CLUSTER:  loansight-cluster-dev
+  API_SERVICE:  loansight-api-dev
+  UI_SERVICE:   loansight-ui-dev
+  API_TASK_DEF: loansight-api-dev
+  UI_TASK_DEF:  loansight-ui-dev
+
+jobs:
+  # ── Job 1: Test ──────────────────────────────────────────────────────────────
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-api.txt
+          pip install pytest httpx ruff scipy
+
+      - name: Lint
+        run: ruff check api/ drift/ --ignore E402
+
+      - name: Run drift tests
+        run: pytest tests/test_drift.py -v --tb=short
+
+      - name: Run API tests
+        run: pytest tests/test_api.py -v --tb=short
+
+  # ── Job 2: Build & Push to ECR ───────────────────────────────────────────────
+  build:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    outputs:
+      api_image: ${{ steps.build-api.outputs.image }}
+      ui_image:  ${{ steps.build-ui.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push API image
+        id: build-api
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE=$ECR_REGISTRY/loansight-api:${{ github.sha }}
+          docker build -f Dockerfile.api -t $IMAGE -t $ECR_REGISTRY/loansight-api:latest .
+          docker push $IMAGE
+          docker push $ECR_REGISTRY/loansight-api:latest
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Build & push UI image
+        id: build-ui
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE=$ECR_REGISTRY/loansight-ui:${{ github.sha }}
+          docker build -f Dockerfile.streamlit -t $IMAGE -t $ECR_REGISTRY/loansight-ui:latest .
+          docker push $IMAGE
+          docker push $ECR_REGISTRY/loansight-ui:latest
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+  # ── Job 3: Deploy to ECS ─────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to ECS Fargate
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Deploy API to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ env.API_TASK_DEF }}
+          service:         ${{ env.API_SERVICE }}
+          cluster:         ${{ env.ECS_CLUSTER }}
+          image:           ${{ needs.build.outputs.api_image }}
+          container-name:  loan-api
+          wait-for-service-stability: true
+
+      - name: Deploy UI to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ env.UI_TASK_DEF }}
+          service:         ${{ env.UI_SERVICE }}
+          cluster:         ${{ env.ECS_CLUSTER }}
+          image:           ${{ needs.build.outputs.ui_image }}
+          container-name:  loan-ui
+          wait-for-service-stability: true
+
+      - name: Verify API health
+        run: |
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster $ECS_CLUSTER --service-name $API_SERVICE \
+            --query 'taskArns[0]' --output text)
+          ENI=$(aws ecs describe-tasks \
+            --cluster $ECS_CLUSTER --tasks $TASK_ARN \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+            --output text)
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+            --network-interface-ids $ENI \
+            --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
+          echo "API at http://$PUBLIC_IP:8000"
+          curl -f "http://$PUBLIC_IP:8000/health" && echo "✅ Healthy"
+          curl -f "http://$PUBLIC_IP:8000/ready"  && echo "✅ Ready"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "⚠️  Deployment failed — rolling back"
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $API_SERVICE \
+            --force-new-deployment

@@ -1,0 +1,1 @@
+{"num_cols": ["age", "income", "loan_amount", "credit_score", "months_employed", "num_credit_lines", "interest_rate", "loan_term", "dti_ratio"], "cat_cols": ["education", "employment_type", "marital_status", "has_mortgage", "has_dependents", "loan_purpose", "has_co_signer"]}

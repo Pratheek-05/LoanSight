@@ -1,0 +1,28 @@
+# Terraform
+*.tfvars
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+infra/terraform/.terraform/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Data & Models (too large for git — use DVC or Azure Blob)
+data/
+artifacts/*.joblib
+
+# Secrets
+.env
+*.env.*
+secrets/
+
+# OS
+.DS_Store
+Thumbs.db

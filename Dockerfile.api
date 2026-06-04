@@ -1,0 +1,44 @@
+# ── Stage 1: builder ──────────────────────────────────────────────────────────
+# Install dependencies into a clean venv so the final image stays lean
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# System deps needed only at build time
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements-api.txt .
+RUN pip install --upgrade pip && \
+    pip install --prefix=/install --no-cache-dir -r requirements-api.txt
+
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+LABEL maintainer="Pratheek"
+LABEL description="Loan Approval Prediction API — XGBoost + SHAP + FastAPI"
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code and model artifacts
+COPY api/       ./api/
+COPY artifacts/ ./artifacts/
+
+# Non-root user for security best-practice
+RUN adduser --disabled-password --no-create-home appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Expose FastAPI port
+EXPOSE 8000
+
+# Health check (Docker native — also used by ACA)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+
+# Start with uvicorn — 1 worker per container (ACA handles scaling)
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
