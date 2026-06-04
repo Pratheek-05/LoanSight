@@ -6,11 +6,16 @@ Run with: pytest tests/ -v
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import app
+from api.main import app, load_model_artifacts, model_state
+
+# ── Load model once before all tests ─────────────────────────────────────────
+# TestClient doesn't trigger FastAPI lifespan, so we load manually
+if not model_state.get("model"):
+    load_model_artifacts()
 
 client = TestClient(app)
 
-# ── Shared fixture ────────────────────────────────────────────────────────────
+# ── Shared fixtures ───────────────────────────────────────────────────────────
 VALID_PAYLOAD = {
     "age": 35, "income": 55000, "loan_amount": 25000,
     "credit_score": 680, "months_employed": 48,
@@ -73,7 +78,7 @@ class TestPredictEndpoint:
         r = client.post("/predict", json=VALID_PAYLOAD)
         data = r.json()
         total = round(data["default_probability"] + data["approval_confidence"], 2)
-        assert total == 1.0, f"Probabilities don't sum to 1: {total}"
+        assert total == 1.0
 
     def test_risk_score_is_0_to_100(self):
         r = client.post("/predict", json=VALID_PAYLOAD)
@@ -98,7 +103,6 @@ class TestPredictEndpoint:
     def test_high_risk_applicant_rejected(self):
         r = client.post("/predict", json=HIGH_RISK_PAYLOAD)
         data = r.json()
-        # High-risk applicant should have high default probability
         assert data["default_probability"] > 0.5 or data["decision"] == "Rejected"
 
     def test_model_version_present(self):
@@ -109,28 +113,23 @@ class TestPredictEndpoint:
 # ── Validation ────────────────────────────────────────────────────────────────
 class TestInputValidation:
     def test_invalid_credit_score_rejected(self):
-        payload = {**VALID_PAYLOAD, "credit_score": 200}   # below 300
-        r = client.post("/predict", json=payload)
+        r = client.post("/predict", json={**VALID_PAYLOAD, "credit_score": 200})
         assert r.status_code == 422
 
     def test_invalid_education_rejected(self):
-        payload = {**VALID_PAYLOAD, "education": "Diploma"}
-        r = client.post("/predict", json=payload)
+        r = client.post("/predict", json={**VALID_PAYLOAD, "education": "Diploma"})
         assert r.status_code == 422
 
     def test_invalid_employment_type_rejected(self):
-        payload = {**VALID_PAYLOAD, "employment_type": "Freelance"}
-        r = client.post("/predict", json=payload)
+        r = client.post("/predict", json={**VALID_PAYLOAD, "employment_type": "Freelance"})
         assert r.status_code == 422
 
     def test_invalid_loan_term_rejected(self):
-        payload = {**VALID_PAYLOAD, "loan_term": 18}   # not in {12,24,36,48,60}
-        r = client.post("/predict", json=payload)
+        r = client.post("/predict", json={**VALID_PAYLOAD, "loan_term": 18})
         assert r.status_code == 422
 
     def test_dti_ratio_above_1_rejected(self):
-        payload = {**VALID_PAYLOAD, "dti_ratio": 1.5}
-        r = client.post("/predict", json=payload)
+        r = client.post("/predict", json={**VALID_PAYLOAD, "dti_ratio": 1.5})
         assert r.status_code == 422
 
     def test_missing_required_field_rejected(self):
