@@ -14,7 +14,6 @@ import time
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import joblib
 import numpy as np

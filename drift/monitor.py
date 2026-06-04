@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from prometheus_client import Counter, Gauge
 
@@ -175,11 +176,8 @@ def _synthetic_baseline(num_cols: list, cat_cols: list) -> pd.DataFrame:
         "loan_purpose":     np.random.choice(["Home", "Auto", "Education", "Business", "Other"], n),
         "has_co_signer":    np.random.choice(["Yes", "No"], n),
     }
-    import numpy as np
     return pd.DataFrame(data)
 
-
-import numpy as np  # noqa: E402 — needed for synthetic baseline
 
 # ── Singleton instance ────────────────────────────────────────────────────────
 drift_monitor = DriftMonitor()
