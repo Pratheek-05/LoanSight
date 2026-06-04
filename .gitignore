@@ -16,7 +16,7 @@ venv/
 
 # Data & Models (too large for git — use DVC or Azure Blob)
 data/
-artifacts/*.joblib
+
 
 # Secrets
 .env
